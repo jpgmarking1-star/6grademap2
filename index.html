@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>위도/경도 및 나라별 시차 학습 지도</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Malgun Gothic', sans-serif;
+            background-color: #0b1528;
+        }
+        #map { width: 100%; height: 100%; cursor: crosshair; }
+        
+        /* 🌟 우측 상단 검색 패널 및 자동완성 디자인 */
+        #search-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            width: 260px;
+        }
+        #search-panel {
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 8px 12px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        #search-input {
+            flex-grow: 1;
+            padding: 8px;
+            font-size: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            outline: none;
+        }
+        #search-btn {
+            padding: 8px 12px;
+            background-color: #03cf5d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        #search-btn:hover { background-color: #02b04e; }
+        
+        /* 드롭다운 추천 목록 */
+        #autocomplete-list {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            margin-top: 5px;
+            max-height: 250px;
+            overflow-y: auto;
+            display: none;
+        }
+        .autocomplete-item {
+            padding: 10px;
+            font-size: 15px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .autocomplete-item:hover { background-color: #f0f8ff; }
+        .autocomplete-item:last-child { border-bottom: none; }
+
+        /* 마우스 좌표 및 라벨 등 기존 스타일 유지 */
+        #cursor-coord {
+            position: absolute; background-color: rgba(0, 0, 0, 0.8); color: #fff;
+            padding: 8px 12px; border-radius: 8px; font-size: 15px; font-weight: bold;
+            pointer-events: none; z-index: 1000; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .grid-label {
+            color: rgba(255, 255, 255, 0.9); text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+            font-size: 14px; font-weight: bold; white-space: nowrap; background-color: rgba(0, 0, 0, 0.4);
+            padding: 2px 6px; border-radius: 4px;
+        }
+        .custom-div-icon { background: transparent; border: none; }
+        .rect-line-label {
+            color: #ffeb3b; font-weight: bold; font-size: 13px; white-space: nowrap;
+            background-color: rgba(0, 0, 0, 0.75); padding: 4px 8px; border-radius: 6px;
+            border: 1.5px solid #ffeb3b; display: inline-block; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        }
+        #info-panel {
+            position: absolute; bottom: 20px; left: 20px; z-index: 1000;
+            background-color: rgba(255, 255, 255, 0.9); padding: 15px; border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); font-size: 14px; line-height: 1.7; border-left: 5px solid #007bff; max-width: 450px;
+        }
+        #reset-btn {
+            position: absolute; top: 90px; right: 20px; z-index: 1000;
+            padding: 10px 20px; background-color: #007bff; color: white; border: none;
+            border-radius: 5px; font-size: 14px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        #reset-btn:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+
+    <div id="search-container">
+        <div id="search-panel">
+            <input type="text" id="search-input" placeholder="나라 검색 (예: 한국)" autocomplete="off">
+            <button id="search-btn" onclick="executeSearch()">검색</button>
+        </div>
+        <div id="autocomplete-list"></div>
+    </div>
+
+    <button id="reset-btn" onclick="resetSelection()">선택 초기화</button>
+
+    <div id="map"></div>
+    <div id="cursor-coord"></div>
+    
+    <div id="info-panel">
+        1. 지도를 두 번 클릭해서 찾을 지도의 좌표를 정하세요. <br>
+        2. 네모칸이 완성되면 해당 지역의 나라와 시간이 <b>자동으로</b> 확인됩니다. (지식백과 연결)
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@joergdietrich/leaflet.terminator"></script>
+
+    <script>
+        // --- 지도 초기화 및 레이어 설정 ---
+        const map = L.map('map', { center: [36.5, 127.5], zoom: 4, minZoom: 2, maxZoom: 8, maxBounds: [[-90, -180], [90, 180]] });
+        L.tileLayer('https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg', { attribution: 'Map data &copy; VWORLD' }).addTo(map);
+
+        map.createPane('labelsPane');
+        map.getPane('labelsPane').style.zIndex = 650; 
+        map.getPane('labelsPane').style.pointerEvents = 'none'; 
+
+        const terminator = L.terminator().addTo(map);
+        setInterval(() => terminator.setTime(), 60000);
+
+        L.tileLayer('https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png', { pane: 'labelsPane' }).addTo(map);
+
+        // --- 위선/경선 격자 및 라벨 ---
+        const gridStyle = { color: 'rgba(255, 255, 255, 0.4)', weight: 1.5, dashArray: '5, 5' };
+        for (let lat = -90; lat <= 90; lat += 30) L.polyline([[lat, -180], [lat, 180]], gridStyle).addTo(map);
+        for (let lng = -180; lng <= 180; lng += 30) L.polyline([[-90, lng], [90, lng]], gridStyle).addTo(map);
+
+        let labelLayerGroup = L.layerGroup().addTo(map);
+
+        function updateGridLabels() {
+            labelLayerGroup.clearLayers(); 
+            let bounds = map.getBounds();
+            let viewWest = Math.max(-180, bounds.getWest()), viewEast = Math.min(180, bounds.getEast());
+            let viewNorth = Math.min(90, bounds.getNorth()), viewSouth = Math.max(-90, bounds.getSouth());
+
+            let latLabelLng = viewWest + (viewEast - viewWest) * 0.1;
+            let lngLabelLat = viewNorth - (viewNorth - viewSouth) * 0.1;
+
+            for (let lat = -90; lat <= 90; lat += 30) {
+                if (lat >= viewSouth && lat <= viewNorth) {
+                    let text = lat === 0 ? '0° (적도)' : (lat > 0 ? `북위 ${lat}°N` : `남위 ${Math.abs(lat)}°S`);
+                    L.marker([lat, latLabelLng], { icon: L.divIcon({ className: 'grid-label', html: text, iconSize: [80, 20] }) }).addTo(labelLayerGroup);
+                }
+            }
+            for (let lng = -180; lng <= 180; lng += 30) {
+                if (lng >= viewWest && lng <= viewEast) {
+                    let text = lng === 0 ? '0° (본초자오선)' : (lng > 0 ? `동경 ${lng}°E` : `서경 ${Math.abs(lng)}°W`);
+                    L.marker([lngLabelLat, lng], { icon: L.divIcon({ className: 'grid-label', html: text, iconSize: [90, 20] }) }).addTo(labelLayerGroup);
+                }
+            }
+        }
+        map.on('move', updateGridLabels);
+        map.on('zoom', updateGridLabels);
+        updateGridLabels();
+
+        // --- 마우스 좌표 추적 ---
+        let cursorCoord = document.getElementById('cursor-coord');
+        map.on('mousemove', function(e) {
+            let lat = e.latlng.lat, lng = e.latlng.lng;
+            while (lng > 180) lng -= 360; while (lng < -180) lng += 360;
+            let latDir = lat >= 0 ? 'N' : 'S', lngDir = lng >= 0 ? 'E' : 'W';
+            cursorCoord.innerText = `위도: ${Math.abs(lat).toFixed(1)}°${latDir} / 경도: ${Math.abs(lng).toFixed(1)}°${lngDir}`;
+            cursorCoord.style.left = (e.originalEvent.pageX + 15) + 'px';
+            cursorCoord.style.top = (e.originalEvent.pageY + 15) + 'px';
+            cursorCoord.style.display = 'block';
+        });
+        map.on('mouseout', () => cursorCoord.style.display = 'none');
+
+        let clickedPoints = [];
+        let drawingLayers = L.layerGroup().addTo(map);
+
+        // 🌟 전 세계 국가 데이터 미리 불러오기 (자동완성용)
+        let countriesData = [];
+        fetch('https://restcountries.com/v3.1/all')
+            .then(res => res.json())
+            .then(data => {
+                countriesData = data.map(c => ({
+                    name: c.translations?.kor?.common || c.name.common,
+                    flag: c.flag || '🌍'
+                }));
+            });
+
+        // 🌟 검색창 자동완성 로직
+        const searchInput = document.getElementById('search-input');
+        const autocompleteList = document.getElementById('autocomplete-list');
+
+        searchInput.addEventListener('input', function() {
+            let val = this.value.trim();
+            autocompleteList.innerHTML = '';
+            if (!val) {
+                autocompleteList.style.display = 'none';
+                return;
+            }
+
+            // 입력값 포함 국가 찾기 ('한국' 치면 '대한민국'도 걸리게, '한반도' 특별처리)
+            let matches = countriesData.filter(c => 
+                c.name.includes(val) || 
+                (val === '한국' && c.name === '대한민국') || 
+                (val === '한반도' && c.name === '대한민국')
+            );
+
+            if (matches.length > 0) {
+                autocompleteList.style.display = 'block';
+                // 최대 8개까지만 표시
+                matches.slice(0, 8).forEach(match => {
+                    let div = document.createElement('div');
+                    div.className = 'autocomplete-item';
+                    div.innerHTML = `<span style="font-size:20px;">${match.flag}</span> <span>${match.name}</span>`;
+                    div.addEventListener('click', () => {
+                        searchInput.value = match.name;
+                        autocompleteList.style.display = 'none';
+                        executeSearch(match.name);
+                    });
+                    autocompleteList.appendChild(div);
+                });
+            } else {
+                autocompleteList.style.display = 'none';
+            }
+        });
+
+        // 엔터키 검색
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                autocompleteList.style.display = 'none';
+                executeSearch();
+            }
+        });
+
+        // 다른 곳 클릭 시 자동완성 닫기
+        document.addEventListener('click', function(e) {
+            if (!document.getElementById('search-container').contains(e.target)) {
+                autocompleteList.style.display = 'none';
+            }
+        });
+
+        // 🌟 검색 및 국경선 표시 실행 함수
+        async function executeSearch(queryOverride) {
+            let query = queryOverride || searchInput.value.trim();
+            if (!query) return;
+
+            // 한반도, 북한 검색 시 무조건 대한민국으로 강제 변환
+            if (query.includes('한반도') || query.includes('북한') || query === '한국') {
+                query = '대한민국';
+            }
+
+            let searchBtn = document.getElementById('search-btn');
+            searchBtn.innerText = "검색중..";
+            
+            let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&polygon_geojson=1&accept-language=ko`;
+            
+            try {
+                let res = await fetch(url);
+                let data = await res.json();
+
+                if (data.length > 0) {
+                    let place = data[0];
+                    let lat = parseFloat(place.lat);
+                    let lon = parseFloat(place.lon);
+
+                    resetSelection(); 
+
+                    if (place.geojson) {
+                        let borderLayer = L.geoJSON(place.geojson, {
+                            style: { color: '#03cf5d', weight: 4, fillOpacity: 0.15 }
+                        }).addTo(drawingLayers);
+                        map.fitBounds(borderLayer.getBounds());
+                    } else {
+                        map.setView([lat, lon], 5);
+                    }
+
+                    let latText = lat >= 0 ? `북위 ${lat.toFixed(2)}°` : `남위 ${Math.abs(lat).toFixed(2)}°`;
+                    let lonText = lon >= 0 ? `동경 ${lon.toFixed(2)}°` : `서경 ${Math.abs(lon).toFixed(2)}°`;
+
+                    L.popup()
+                        .setLatLng([lat, lon])
+                        .setContent(`
+                            <div style="text-align:center; font-size:14px; padding:5px; min-width:150px;">
+                                <span style="font-size:12px; color:#03cf5d; font-weight:bold;">검색 결과</span><br>
+                                <b style="font-size:18px; color:#111; display:block; margin:5px 0;">${place.name || query}</b>
+                                <hr style="border: none; border-top: 1px solid #eee; margin: 6px 0;">
+                                <span style="color:#444; font-weight:bold;">${latText} <br> ${lonText}</span>
+                            </div>
+                        `)
+                        .openOn(map);
+                } else {
+                    alert("나라를 찾을 수 없습니다.");
+                }
+            } catch (e) {
+                alert("검색 중 오류가 발생했습니다.");
+            } finally {
+                searchBtn.innerText = "검색";
+            }
+        }
+
+        // --- 마우스 클릭 (네모 자동 생성 및 시간/정보 즉시 팝업) ---
+        map.on('click', function(e) {
+            let lat = e.latlng.lat, lng = e.latlng.lng;
+            if (clickedPoints.length === 2) resetSelection();
+            clickedPoints.push(e.latlng);
+
+            let crossStyle = { color: 'yellow', weight: 2, opacity: 0.8 };
+            drawingLayers.addLayer(L.polyline([[-90, lng], [90, lng]], crossStyle));
+            drawingLayers.addLayer(L.polyline([[lat, -180], [lat, 180]], crossStyle));
+
+            if (clickedPoints.length === 2) {
+                let p1 = clickedPoints[0], p2 = clickedPoints[1];
+                let minLng = Math.min(p1.lng, p2.lng), maxLng = Math.max(p1.lng, p2.lng);
+                let minLat = Math.min(p1.lat, p2.lat), maxLat = Math.max(p1.lat, p2.lat);
+
+                let popupLngText = (minLng >= 0 && maxLng >= 0) ? `동경 ${minLng.toFixed(1)}° ~ ${maxLng.toFixed(1)}°` : 
+                                   (minLng < 0 && maxLng < 0) ? `서경 ${Math.abs(minLng).toFixed(1)}° ~ ${Math.abs(maxLng).toFixed(1)}°` : 
+                                   `서경 ${Math.abs(minLng).toFixed(1)}° ~ 동경 ${maxLng.toFixed(1)}°`;
+                let popupLatText = (minLat >= 0 && maxLat >= 0) ? `북위 ${minLat.toFixed(1)}° ~ ${maxLat.toFixed(1)}°` : 
+                                   (minLat < 0 && maxLat < 0) ? `남위 ${Math.abs(minLat).toFixed(1)}° ~ ${Math.abs(maxLat).toFixed(1)}°` : 
+                                   `남위 ${Math.abs(minLat).toFixed(1)}° ~ 북위 ${maxLat.toFixed(1)}°`;
+
+                let centerLat = (minLat + maxLat) / 2;
+                let centerLng = (minLng + maxLng) / 2;
+                
+                let maxLatLabel = maxLat >= 0 ? `북위 ${maxLat.toFixed(1)}°` : `남위 ${Math.abs(maxLat).toFixed(1)}°`;
+                let minLatLabel = minLat >= 0 ? `북위 ${minLat.toFixed(1)}°` : `남위 ${Math.abs(minLat).toFixed(1)}°`;
+                let maxLngLabel = maxLng >= 0 ? `동경 ${maxLng.toFixed(1)}°` : `서경 ${Math.abs(maxLng).toFixed(1)}°`;
+                let minLngLabel = minLng >= 0 ? `동경 ${minLng.toFixed(1)}°` : `서경 ${Math.abs(minLng).toFixed(1)}°`;
+
+                let rect = L.rectangle(clickedPoints, { color: "#ff3333", weight: 3, fillColor: "#ff3333", fillOpacity: 0.2 });
+                drawingLayers.addLayer(rect);
+
+                drawingLayers.addLayer(L.marker([maxLat, centerLng], { icon: L.divIcon({ className: 'custom-div-icon', html: `<div class="rect-line-label" style="transform: translate(-50%, -130%);">${maxLatLabel}</div>` }) }));
+                drawingLayers.addLayer(L.marker([minLat, centerLng], { icon: L.divIcon({ className: 'custom-div-icon', html: `<div class="rect-line-label" style="transform: translate(-50%, 30%);">${minLatLabel}</div>` }) }));
+                drawingLayers.addLayer(L.marker([centerLat, minLng], { icon: L.divIcon({ className: 'custom-div-icon', html: `<div class="rect-line-label" style="transform: translate(-115%, -50%);">${minLngLabel}</div>` }) }));
+                drawingLayers.addLayer(L.marker([centerLat, maxLng], { icon: L.divIcon({ className: 'custom-div-icon', html: `<div class="rect-line-label" style="transform: translate(15%, -50%);">${maxLngLabel}</div>` }) }));
+
+                let rectPopup = L.popup().setLatLng([centerLat, centerLng]).setContent("⏳ 정보 분석 중...").openOn(map);
+                rect.bindPopup(rectPopup);
+
+                Promise.all([
+                    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${centerLat}&longitude=${centerLng}&current_weather=true&timezone=auto`).then(res => res.json()),
+                    fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${centerLat}&longitude=${centerLng}&localityLanguage=ko`).then(res => res.json())
+                ])
+                .then(([timeData, geoData]) => {
+                    let offsetHours = timeData.utc_offset_seconds / 3600;
+                    let sign = offsetHours >= 0 ? '+' : '';
+                    let continent = geoData.continent || "대양/기타";
+                    let countryName = geoData.countryName || "바다 (공해)";
+
+                    // 🌟 한반도(북한) 강제 대한민국 표기 로직 적용
+                    if (countryName.includes("조선민주주의인민공화국") || countryName.includes("북한") || countryName.includes("North Korea")) {
+                        countryName = "대한민국";
+                    }
+                    
+                    let now = new Date();
+                    let localTimeMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (timeData.utc_offset_seconds * 1000);
+                    let localDate = new Date(localTimeMs);
+                    let timeString = localDate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+                    let naverBtn = countryName !== "바다 (공해)" ? `<a href="https://terms.naver.com/search.naver?query=${encodeURIComponent(countryName)}" target="_blank" style="display:block; margin-top:10px; padding:6px; background-color:#03cf5d; color:white; text-decoration:none; border-radius:5px; font-weight:bold; font-size:12px;">💚 지식백과 바로가기</a>` : "";
+
+                    rectPopup.setContent(`
+                        <div style='text-align:center; font-size:14px; line-height:1.5; min-width:200px; padding:5px;'>
+                            <div style='background-color:#f8f9fa; padding:6px; border-radius:5px; border:1px solid #ddd; margin-bottom:8px; font-weight:bold; font-size:13px;'>
+                                ${popupLngText}<br>${popupLatText}
+                            </div>
+                            <span style="font-size:12px; color:#777;">🌍 ${continent}</span><br>
+                            <b style="font-size:18px; color:#111;">${countryName}</b>
+                            <b style="color:#007bff; display:block;">GMT ${sign}${offsetHours}</b>
+                            <span style="font-size:12px; color:#666;">현지 시간: ${timeString}</span>
+                            ${naverBtn}
+                        </div>
+                    `);
+                }).catch(() => rectPopup.setContent("❌ 정보 로드 실패"));
+            }
+        });
+
+        window.resetSelection = function() {
+            drawingLayers.clearLayers();
+            clickedPoints = [];
+            map.closePopup();
+            document.getElementById('search-input').value = '';
+            autocompleteList.style.display = 'none';
+        };
+    </script>
+</body>
+</html>
