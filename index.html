@@ -11,7 +11,14 @@
         }
         #map { width: 100%; height: 100%; cursor: crosshair; }
         
-        /* 안내 패널 (좌측 하단으로 원상복구) */
+        /* 🌟 실시간 마우스 좌표 툴팁 디자인 */
+        #cursor-coord {
+            position: absolute; background-color: rgba(0, 0, 0, 0.8); color: #fff;
+            padding: 8px 12px; border-radius: 8px; font-size: 15px; font-weight: bold;
+            pointer-events: none; z-index: 2000; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        /* 안내 패널 */
         #info-panel {
             position: absolute; bottom: 20px; left: 20px; z-index: 1000;
             background-color: rgba(255, 255, 255, 0.95); padding: 15px; border-radius: 8px;
@@ -66,7 +73,7 @@
 
     <div id="info-panel">
         1. 지도를 두 번 클릭해서 찾을 지도의 좌표를 정하세요. <br>
-        2. 네모칸이 완성되면 해당 지역의 나라와 시간이 <b>자동으로</b> 확인됩니다. (오류가 있을 수 있습니다.)
+        2. 네모칸이 완성되면 해당 지역의 나라와 시간이 <b>자동으로</b> 확인됩니다. (오류가 있을 수 있음. 눈치껏 넘어가기)
     </div>
 
     <div id="search-container">
@@ -79,6 +86,8 @@
     <button id="reset-btn" onclick="resetSelection()">선택 초기화</button>
 
     <div id="map"></div>
+    
+    <div id="cursor-coord"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/@joergdietrich/leaflet.terminator"></script>
@@ -122,6 +131,30 @@
             }
         }
         map.on('move', updateGridLabels); map.on('zoom', updateGridLabels); updateGridLabels();
+
+        // 🌟 마우스 커서 좌표 추적 로직 추가 🌟
+        let cursorCoord = document.getElementById('cursor-coord');
+        map.on('mousemove', function(e) {
+            let lat = e.latlng.lat;
+            let lng = e.latlng.lng;
+            
+            // 경도 보정 (-180 ~ 180 유지)
+            while (lng > 180) lng -= 360; 
+            while (lng < -180) lng += 360;
+            
+            let latText = lat >= 0 ? `북위 ${lat.toFixed(1)}°` : `남위 ${Math.abs(lat).toFixed(1)}°`;
+            let lngText = lng >= 0 ? `동경 ${lng.toFixed(1)}°` : `서경 ${Math.abs(lng).toFixed(1)}°`;
+            
+            cursorCoord.innerText = `${latText} / ${lngText}`;
+            cursorCoord.style.left = (e.originalEvent.clientX + 15) + 'px';
+            cursorCoord.style.top = (e.originalEvent.clientY + 15) + 'px';
+            cursorCoord.style.display = 'block';
+        });
+
+        map.on('mouseout', function() {
+            cursorCoord.style.display = 'none';
+        });
+
 
         // --- 국가 자동완성 검색 기능 ---
         let countriesData = [];
@@ -267,7 +300,6 @@
                 let rectPopup = L.popup().setLatLng([centerLat, centerLng]).setContent("⏳ 정보 분석 중...").openOn(map);
                 rect.bindPopup(rectPopup);
 
-                // 🌟 크롬북 오류 해결: 더 정확한 API(Nominatim)로 역 지오코딩 교체
                 Promise.all([
                     fetch(`https://api.open-meteo.com/v1/forecast?latitude=${centerLat}&longitude=${centerLng}&current_weather=true&timezone=auto`).then(res => res.json()),
                     fetch(`https://nominatim.openstreetmap.org/reverse?lat=${centerLat}&lon=${centerLng}&format=json&accept-language=ko`).then(res => res.json()).catch(() => ({}))
@@ -278,12 +310,10 @@
                     
                     let countryName = "바다 (공해)";
                     
-                    // 정확한 국가 이름 파싱 (해당 좌표가 바다일 경우 address가 없으므로 공해로 유지)
                     if (geoData && geoData.address && geoData.address.country) {
                         countryName = geoData.address.country;
                     }
 
-                    // 🌟 한반도(북한) 강제 대한민국 표기 로직 적용
                     if (countryName.includes("조선민주주의인민공화국") || countryName.includes("북한") || countryName.includes("North Korea")) {
                         countryName = "대한민국";
                     }
@@ -293,7 +323,7 @@
                     let localDate = new Date(localTimeMs);
                     let timeString = localDate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
-                    let naverBtn = countryName !== "바다 (공해)" ? `<a href="https://terms.naver.com/search.naver?query=${encodeURIComponent(countryName)}" target="_blank" style="display:block; margin-top:10px; padding:6px; background-color:#03cf5d; color:white; text-decoration:none; border-radius:5px; font-weight:bold; font-size:12px;"> 지식백과 바로가기</a>` : "";
+                    let naverBtn = countryName !== "바다 (공해)" ? `<a href="https://terms.naver.com/search.naver?query=${encodeURIComponent(countryName)}" target="_blank" style="display:block; margin-top:10px; padding:6px; background-color:#03cf5d; color:white; text-decoration:none; border-radius:5px; font-weight:bold; font-size:12px;">💚 지식백과 바로가기</a>` : "";
 
                     rectPopup.setContent(`
                         <div style='text-align:center; font-size:14px; line-height:1.5; min-width:200px; padding:5px;'>
