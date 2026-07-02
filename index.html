@@ -176,28 +176,59 @@
         async function executeSearch(queryOverride) {
             let query = queryOverride || searchInput.value.trim();
             if (!query) return;
-            if (query.includes('한반도') || query.includes('북한') || query === '한국') query = '대한민국';
+            
+            let displayQuery = query;
+            let isUnifiedKorea = false;
+
+            // 한국/대한민국/북한 검색 시 한반도 전체 범위를 탐색하되 출력 이름은 '대한민국'으로 고정
+            if (query.includes('한반도') || query.includes('북한') || query === '한국' || query === '대한민국') {
+                isUnifiedKorea = true;
+                displayQuery = '대한민국';
+            }
 
             let searchBtn = document.getElementById('search-btn');
             searchBtn.innerText = "검색중..";
             
             try {
-                // 1. 오픈스트리트맵 (가장 정확, 영토 폴리곤 지원)
-                let res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&polygon_geojson=1&accept-language=ko`);
-                let data = await res.json();
+                if (isUnifiedKorea) {
+                    // 남한과 북한 폴리곤을 각각 호출하여 하나로 합침
+                    let resSouth = await fetch(`https://nominatim.openstreetmap.org/search?q=대한민국&format=json&polygon_geojson=1&accept-language=ko`);
+                    let resNorth = await fetch(`https://nominatim.openstreetmap.org/search?q=조선민주주의인민공화국&format=json&polygon_geojson=1&accept-language=ko`);
+                    
+                    let dataSouth = await resSouth.json();
+                    let dataNorth = await resNorth.json();
 
-                if (data.length > 0) {
-                    renderSearchResult(data[0], query);
-                } else throw new Error("Nominatim No Result");
+                    if (dataSouth.length > 0 && dataNorth.length > 0) {
+                        let combinedGeoJSON = {
+                            type: "FeatureCollection",
+                            features: [
+                                { type: "Feature", geometry: dataSouth[0].geojson, properties: {} },
+                                { type: "Feature", geometry: dataNorth[0].geojson, properties: {} }
+                            ]
+                        };
+                        // 팝업이 뜰 중앙 좌표 설정 (한반도의 중앙 부근)
+                        renderSearchResult({ lat: 38.3, lon: 127.0, name: displayQuery, geojson: combinedGeoJSON }, displayQuery);
+                    } else throw new Error("Nominatim No Result for Korea");
+                } else {
+                    // 1. 일반 오픈스트리트맵 검색 (가장 정확, 영토 폴리곤 지원)
+                    let res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&polygon_geojson=1&accept-language=ko`);
+                    let data = await res.json();
+
+                    if (data.length > 0) {
+                        data[0].name = displayQuery; // 강제로 이름 변경
+                        renderSearchResult(data[0], displayQuery);
+                    } else throw new Error("Nominatim No Result");
+                }
             } catch (e) {
                 // 2. 크롬북에서 위 API가 막혔을 경우 우회 접속 (Open-Meteo Geocoding)
                 try {
-                    let fallbackRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&language=ko&count=1`);
+                    let fallbackRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(isUnifiedKorea ? '대한민국' : query)}&language=ko&count=1`);
                     let fallbackData = await fallbackRes.json();
                     
                     if (fallbackData.results && fallbackData.results.length > 0) {
                         let place = fallbackData.results[0];
-                        renderSearchResult({ lat: place.latitude, lon: place.longitude, name: place.name }, query);
+                        place.name = displayQuery; // 강제로 이름 변경
+                        renderSearchResult({ lat: place.latitude, lon: place.longitude, name: place.name }, displayQuery);
                     } else alert("나라를 찾을 수 없습니다.");
                 } catch (fallbackErr) {
                     alert("검색 네트워크가 차단되었습니다. 학교망 방화벽 설정을 확인해주세요.");
@@ -267,11 +298,12 @@
                 let rectPopup = L.popup().setLatLng([centerLat, centerLng]).setContent("⏳ 정보 분석 중...").openOn(map);
                 rect.bindPopup(rectPopup);
 
-                // 위치 정보 가져오기 함수 (크롬북 최적화 API)
+                // 위치 정보 가져오기 함수 (정확도 높은 Nominatim으로 변경하여 공해 오류 해결)
                 const fetchGeoInfo = async (lat, lng) => {
                     try {
-                        let res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=ko`);
-                        return await res.json();
+                        let res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=ko`);
+                        let data = await res.json();
+                        return { countryName: data.address ? (data.address.country || "") : "" };
                     } catch(e) { return {}; }
                 };
 
@@ -283,14 +315,21 @@
                 let geoData = await fetchGeoInfo(centerLat, centerLng);
                 let countryName = geoData.countryName || "";
 
-                // 2차 시도: 정중앙이 바다에 빠졌을 경우, 선생님이 처음 클릭했던(육지일 확률이 높은) 첫 번째 좌표로 재검사
+                // 2차 시도: 정중앙이 바다에 빠졌을 경우, 선생님이 처음 클릭했던 첫 번째 좌표(p1)로 재검사
                 if (countryName === "" || countryName.includes("바다")) {
                     geoData = await fetchGeoInfo(p1.lat, p1.lng);
+                    countryName = geoData.countryName || "";
+                }
+                // 3차 시도: 첫 번째 좌표도 바다라면 두 번째 좌표(p2)까지 검사
+                if (countryName === "" || countryName.includes("바다")) {
+                    geoData = await fetchGeoInfo(p2.lat, p2.lng);
                     countryName = geoData.countryName || "바다 (공해)";
                 }
 
-                // 북한 강제 변환
-                if (countryName.includes("조선민주주의인민공화국") || countryName.includes("북한") || countryName.includes("North Korea")) {
+                if (!countryName) countryName = "바다 (공해)";
+
+                // 북한 강제 변환 및 한반도 통일 처리
+                if (countryName.includes("조선민주주의인민공화국") || countryName.includes("북한") || countryName.includes("North Korea") || countryName.includes("한반도")) {
                     countryName = "대한민국";
                 }
 
